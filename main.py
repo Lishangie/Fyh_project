@@ -1,7 +1,14 @@
 import os
 import argparse
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+try:
+    # prefer the installed langgraph package if available
+    from langgraph import StateGraph, END
+    from langgraph.checkpoint import SqliteSaver
+except Exception:
+    # fallback to local emulator
+    from langgraph.graph import StateGraph, END
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 
@@ -9,6 +16,7 @@ from state import ReportState
 from agents.researcher import research_node
 from agents.writer import writer_node
 from agents.coder import coder_visualizer_node
+from agents.error_resolver import error_resolver_node
 
 def document_assembler_node(state: ReportState) -> dict:
     print("--- Запуск генерации эталонного DOCX файла ---")
@@ -61,8 +69,24 @@ def document_assembler_node(state: ReportState) -> dict:
 
 def route_code_execution(state: ReportState):
     errors = state.get("execution_errors", [])
-    if errors:
-        print(f"--- Обнаружены ошибки: {errors} — возврат к coder_node ---")
+    return "coder_error" if errors else "coder_ok"
+
+
+def writer_router(state: ReportState):
+    errors = state.get("execution_errors", [])
+    return "writer_error" if errors else "writer_ok"
+
+
+def error_resolution_router(state: ReportState):
+    # Decide where to go after error_resolver_node sets last_resolution and last_failed_node
+    lr = state.get("last_resolution")
+    failed = state.get("last_failed_node")
+    if lr == "retry":
+        # route back to the failing node
+        if failed and "writer" in failed:
+            return "writer_node"
+        if failed and "coder" in failed:
+            return "coder_node"
         return "coder_node"
     return "assembler_node"
 
@@ -71,19 +95,41 @@ def build_autonomous_graph():
     workflow.add_node("researcher_node", research_node)
     workflow.add_node("writer_node", writer_node)
     workflow.add_node("coder_node", coder_visualizer_node)
+    workflow.add_node("error_resolver_node", error_resolver_node)
     workflow.add_node("assembler_node", document_assembler_node)
 
     workflow.set_entry_point("researcher_node")
     workflow.add_edge("researcher_node", "writer_node")
-    workflow.add_edge("writer_node", "coder_node")
 
+    # Writer -> either coder or error resolver
+    workflow.add_conditional_edges(
+        "writer_node",
+        writer_router,
+        {
+            "writer_ok": "coder_node",
+            "writer_error": "error_resolver_node",
+        },
+    )
+
+    # Coder -> assembler or error resolver
     workflow.add_conditional_edges(
         "coder_node",
         route_code_execution,
         {
+            "coder_ok": "assembler_node",
+            "coder_error": "error_resolver_node",
+        },
+    )
+
+    # After resolving an error, route according to resolver's decision
+    workflow.add_conditional_edges(
+        "error_resolver_node",
+        error_resolution_router,
+        {
+            "writer_node": "writer_node",
             "coder_node": "coder_node",
-            "assembler_node": "assembler_node"
-        }
+            "assembler_node": "assembler_node",
+        },
     )
 
     workflow.add_edge("assembler_node", END)

@@ -5,3 +5,9 @@ numpy
 pandas
 Pygments
 Jinja2
+requests
+langchain
+langchain-openai
+langgraph
+pydantic
+pdfplumber
