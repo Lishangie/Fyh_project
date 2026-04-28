@@ -10,3 +10,14 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - ALLOW_PLANTUML=1
+  frontend:
+    build: .
+    command: streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./:/app:rw
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      - backend

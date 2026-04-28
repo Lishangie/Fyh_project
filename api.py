@@ -1,11 +1,11 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import threading
 import uuid
 import os
-from typing import Optional
-
+from typing import Optional, List
+import shutil
 from main import build_autonomous_graph
 
 app = FastAPI(title="Fyh_project Report API")
@@ -43,6 +43,40 @@ def start_report(req: StartRequest):
     t.start()
     _threads[thread_id] = t
     return {"thread_id": thread_id}
+
+
+@app.post("/knowledge/upload")
+def upload_knowledge(files: List[UploadFile] = File(...)):
+    """Accept multiple files and save them into `assets/knowledge_base/`."""
+    kb_dir = os.path.join("assets", "knowledge_base")
+    os.makedirs(kb_dir, exist_ok=True)
+    saved = []
+    for up in files:
+        try:
+            filename = os.path.basename(up.filename)
+            dest = os.path.join(kb_dir, filename)
+            # avoid overwrite by adding suffix if necessary
+            if os.path.exists(dest):
+                base, ext = os.path.splitext(filename)
+                i = 1
+                while os.path.exists(os.path.join(kb_dir, f"{base}_{i}{ext}")):
+                    i += 1
+                dest = os.path.join(kb_dir, f"{base}_{i}{ext}")
+            with open(dest, "wb") as f:
+                shutil.copyfileobj(up.file, f)
+            saved.append(os.path.basename(dest))
+        except Exception as e:
+            return {"error": str(e)}
+    return {"saved": saved}
+
+
+@app.get("/knowledge/list")
+def knowledge_list():
+    kb_dir = os.path.join("assets", "knowledge_base")
+    if not os.path.isdir(kb_dir):
+        return {"files": []}
+    files = sorted(os.listdir(kb_dir))
+    return {"files": files}
 
 
 @app.get("/report/status/{thread_id}")
