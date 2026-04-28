@@ -1,0 +1,41 @@
+.venv/
+venv/
+ENV/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Byte-compiled / optimized / DLL files
+*.so
+
+# Distribution / packaging
+build/
+dist/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# Data and artifacts
+artifacts/
+assets/knowledge_base/
+sqlite_checkpoints.db
+
+# Editor/project files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# Test cache
+.pytest_cache/
+.coverage

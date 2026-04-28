@@ -1,0 +1,7 @@
+docxtpl
+python-docx
+matplotlib
+numpy
+pandas
+Pygments
+Jinja2

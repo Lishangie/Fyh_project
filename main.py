@@ -1,0 +1,142 @@
+import os
+import argparse
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.sqlite import SqliteSaver
+from docxtpl import DocxTemplate, InlineImage
+from docx.shared import Mm
+
+from state import ReportState
+from agents.researcher import research_node
+from agents.writer import writer_node
+from agents.coder import coder_visualizer_node
+
+def document_assembler_node(state: ReportState) -> dict:
+    print("--- Запуск генерации эталонного DOCX файла ---")
+    template_path = os.path.join("assets", "template_gost.docx")
+    os.makedirs("assets", exist_ok=True)
+    os.makedirs("artifacts", exist_ok=True)
+
+    # Если шаблон отсутствует — создаём минимальный шаблон с Jinja2-тегами
+    if not os.path.exists(template_path):
+        try:
+            from docx import Document
+            doc = Document()
+            doc.add_paragraph("{{ report_title }}")
+            doc.add_paragraph("")
+            doc.add_paragraph("{{ main_body_text }}")
+            doc.add_paragraph("{{ dynamic_img_0 }}")
+            doc.add_paragraph("{{ dynamic_img_1 }}")
+            doc.save(template_path)
+            print(f"Создан базовый шаблон: {template_path}")
+        except Exception as e:
+            return {"execution_errors": [f"Не удалось создать шаблон: {e}"]}
+
+    try:
+        doc = DocxTemplate(template_path)
+    except Exception as e:
+        return {"execution_errors": [f"Ошибка загрузки шаблона docx: {e}"]}
+
+    images_context = {}
+    for idx, path in enumerate(state.get("artifact_paths", [])):
+        if os.path.exists(path):
+            images_context[f"dynamic_img_{idx}"] = InlineImage(doc, path, width=Mm(160))
+        else:
+            print(f"Внимание: изображение {path} не найдено.")
+
+    context = {
+        "report_title": state.get("task_description", "Академический Отчет"),
+        "main_body_text": state.get("draft_text", ""),
+        "data_tables": state.get("dynamic_tables", []),
+        **images_context
+    }
+
+    try:
+        doc.render(context)
+        output_file = os.path.join("artifacts", "Final_Academic_Report.docx")
+        doc.save(output_file)
+        print(f"--- Документ успешно скомпилирован: {output_file} ---")
+        return {"execution_errors": []}
+    except Exception as e:
+        return {"execution_errors": [str(e)]}
+
+def route_code_execution(state: ReportState):
+    errors = state.get("execution_errors", [])
+    if errors:
+        print(f"--- Обнаружены ошибки: {errors} — возврат к coder_node ---")
+        return "coder_node"
+    return "assembler_node"
+
+def build_autonomous_graph():
+    workflow = StateGraph(ReportState)
+    workflow.add_node("researcher_node", research_node)
+    workflow.add_node("writer_node", writer_node)
+    workflow.add_node("coder_node", coder_visualizer_node)
+    workflow.add_node("assembler_node", document_assembler_node)
+
+    workflow.set_entry_point("researcher_node")
+    workflow.add_edge("researcher_node", "writer_node")
+    workflow.add_edge("writer_node", "coder_node")
+
+    workflow.add_conditional_edges(
+        "coder_node",
+        route_code_execution,
+        {
+            "coder_node": "coder_node",
+            "assembler_node": "assembler_node"
+        }
+    )
+
+    workflow.add_edge("assembler_node", END)
+
+    memory = SqliteSaver.from_conn_string("sqlite_checkpoints.db")
+    graph = workflow.compile(checkpointer=memory, interrupt_before=["assembler_node"])
+    return graph
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--thread-id", default="mirea_report_session_01", help="ID of the graph thread/session")
+    parser.add_argument("-y", "--yes", action="store_true", help="auto-approve HITL checkpoint and continue")
+    args = parser.parse_args()
+
+    app_graph = build_autonomous_graph()
+    thread_config = {"configurable": {"thread_id": args.thread_id}}
+    initial_state = {
+        "task_description": "Проектирование и анализ отказоустойчивой IoT системы",
+        "context_data": "Логи нагрузочного тестирования sensors_data.csv",
+        "artifact_paths": [],
+        "dynamic_tables": [],
+        "execution_errors": []
+    }
+
+    print(">>> Инициализация графа генерации...")
+    for event in app_graph.stream(initial_state, config=thread_config):
+        for node_name, node_state in event.items():
+            print(f"=== Завершено выполнение узла: {node_name} ===")
+
+    # Inspect checkpoint to see whether we paused before a HITL node
+    state_snapshot = app_graph.get_state(thread_config)
+    current_state = state_snapshot.values
+    current_node = state_snapshot.current_node
+
+    if current_node is None:
+        print("\n>>> Граф завершён — нет чекпоинта. Проверьте artifacts/ for output.")
+    else:
+        print("\n>>> Процесс приостановлен фреймворком (Human-in-the-Loop). Откройте artifacts/ и assets/ для проверки.")
+        print(f"Сгенерировано изображений: {len(current_state.get('artifact_paths', []))}")
+        print(f"Сгенерировано таблиц: {len(current_state.get('dynamic_tables', []))}")
+
+        auto = args.yes or os.environ.get("AUTO_APPROVE", "0") in ("1", "true", "True")
+        if auto:
+            approve = True
+            print("Авто-одобрение включено — продолжаем сборку.")
+        else:
+            user_approval = input("\nОдобрить промежуточные результаты и запустить компиляцию DOCX? (y/n): ")
+            approve = user_approval.lower() == 'y'
+
+        if approve:
+            print(">>> Возобновление выполнения графа...")
+            for event in app_graph.stream(None, config=thread_config):
+                for node_name, node_state in event.items():
+                    print(f"=== Завершено выполнение узла: {node_name} ===")
+        else:
+            print(">>> Сборка остановлена. Обновите state (human_feedback) для повторной генерации.")
