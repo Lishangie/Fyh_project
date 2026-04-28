@@ -178,11 +178,12 @@ def build_autonomous_graph():
     graph = workflow.compile(checkpointer=memory, interrupt_before=["assembler_node"])
     return graph
 
-if __name__ == "__main__":
+
+def run_cli(argv: Optional[list] = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--thread-id", default="mirea_report_session_01", help="ID of the graph thread/session")
     parser.add_argument("-y", "--yes", action="store_true", help="auto-approve HITL checkpoint and continue")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     app_graph = build_autonomous_graph()
     thread_config = {"configurable": {"thread_id": args.thread_id}}
@@ -206,48 +207,53 @@ if __name__ == "__main__":
 
     if current_node is None:
         print("\n>>> Граф завершён — нет чекпоинта. Проверьте artifacts/ for output.")
-    else:
-        print("\n>>> Процесс приостановлен фреймворком (Human-in-the-Loop). Откройте artifacts/ и assets/ для проверки.")
-        print(f"Сгенерировано изображений: {len(current_state.get('artifact_paths', []))}")
-        print(f"Сгенерировано таблиц: {len(current_state.get('dynamic_tables', []))}")
+        return
 
-        auto = args.yes or os.environ.get("AUTO_APPROVE", "0") in ("1", "true", "True")
-        if auto:
+    print("\n>>> Процесс приостановлен фреймворком (Human-in-the-Loop). Откройте artifacts/ и assets/ для проверки.")
+    print(f"Сгенерировано изображений: {len(current_state.get('artifact_paths', []))}")
+    print(f"Сгенерировано таблиц: {len(current_state.get('dynamic_tables', []))}")
+
+    auto = args.yes or os.environ.get("AUTO_APPROVE", "0") in ("1", "true", "True")
+    if auto:
+        approve = True
+        feedback_input = None
+        print("Авто-одобрение включено — продолжаем сборка.")
+    else:
+        user_input = input(
+            "\nОдобрить промежуточные результаты и запустить компиляцию DOCX?\n"
+            "Введите 'y' для подтверждения, 'n' для отмены, или введите текстовый отзыв для обучения: "
+        )
+        ui = (user_input or "").strip()
+        if ui.lower() == 'y':
             approve = True
             feedback_input = None
-            print("Авто-одобрение включено — продолжаем сборка.")
+        elif ui.lower() == 'n' or ui == '':
+            approve = False
+            feedback_input = None
         else:
-            user_input = input(
-                "\nОдобрить промежуточные результаты и запустить компиляцию DOCX?\n"
-                "Введите 'y' для подтверждения, 'n' для отмены, или введите текстовый отзыв для обучения: "
-            )
-            ui = (user_input or "").strip()
-            if ui.lower() == 'y':
-                approve = True
-                feedback_input = None
-            elif ui.lower() == 'n' or ui == '':
-                approve = False
-                feedback_input = None
-            else:
-                # treat any other non-empty input as feedback to process
-                approve = True
-                feedback_input = ui
+            # treat any other non-empty input as feedback to process
+            approve = True
+            feedback_input = ui
 
-        if approve:
-            # If user provided freeform feedback, save it into the checkpoint so
-            # the graph can route to the feedback processor when resumed.
-            if feedback_input:
-                thread_id = thread_config.get("configurable", {}).get("thread_id", "default_thread")
-                current_state["human_feedback"] = feedback_input
-                # save updated checkpoint at the same paused node
-                try:
-                    app_graph.checkpointer.save(thread_id, current_state, current_node)
-                except Exception as e:
-                    print(f"Не удалось сохранить отзыв в чекпоинт: {e}")
+    if approve:
+        # If user provided freeform feedback, save it into the checkpoint so
+        # the graph can route to the feedback processor when resumed.
+        if feedback_input:
+            thread_id = thread_config.get("configurable", {}).get("thread_id", "default_thread")
+            current_state["human_feedback"] = feedback_input
+            # save updated checkpoint at the same paused node
+            try:
+                app_graph.checkpointer.save(thread_id, current_state, current_node)
+            except Exception as e:
+                print(f"Не удалось сохранить отзыв в чекпоинт: {e}")
 
-            print(">>> Возобновление выполнения графа...")
-            for event in app_graph.stream(None, config=thread_config):
-                for node_name, node_state in event.items():
-                    print(f"=== Завершено выполнение узла: {node_name} ===")
-        else:
-            print(">>> Сборка остановлена. Обновите state (human_feedback) для повторной генерации.")
+        print(">>> Возобновление выполнения графа...")
+        for event in app_graph.stream(None, config=thread_config):
+            for node_name, node_state in event.items():
+                print(f"=== Завершено выполнение узла: {node_name} ===")
+    else:
+        print(">>> Сборка остановлена. Обновите state (human_feedback) для повторной генерации.")
+
+
+if __name__ == "__main__":
+    run_cli()

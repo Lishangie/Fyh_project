@@ -53,16 +53,64 @@ def _security_review(code: str) -> Tuple[bool, str]:
 
 
 def _exec_code_in_subprocess(code: str, cwd: str) -> Tuple[bool, str, str]:
-    """Write code to a temp file and run it in a subprocess; return (ok, stdout, stderr)."""
+    """Execute generated code inside an ephemeral Docker container for isolation.
+
+    Falls back to local subprocess execution if Docker is unavailable or fails.
+    Returns (ok, stdout, stderr).
+    """
+    # write code to a temp file inside cwd so it can be mounted
     fd, path = tempfile.mkstemp(suffix=".py", dir=cwd)
     os.close(fd)
     with open(path, "w", encoding="utf8") as f:
         f.write(code)
 
-    proc = subprocess.Popen([os.sys.executable, path], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    out, err = proc.communicate(timeout=120)
-    ok = proc.returncode == 0
-    return ok, out, err
+    host_cwd = os.path.abspath(cwd)
+    container_wd = "/workspace"
+    script_name = os.path.basename(path)
+
+    # Decide whether to allow network (only for PlantUML rendering)
+    allow_network = False
+    if "plantuml" in code.lower() or "plantuml.com" in code.lower():
+        allow_network = True
+
+    # Build docker command
+    docker_cmd = [
+        "docker", "run", "--rm",
+        # network disabled by default
+    ]
+    if not allow_network:
+        docker_cmd += ["--network", "none"]
+    # resource limits
+    docker_cmd += ["-m", "256m", "--cpus", "0.5"]
+    # mount the working directory so artifacts are persisted
+    docker_cmd += ["-v", f"{host_cwd}:{container_wd}", "-w", container_wd]
+    # use a minimal Python image
+    docker_cmd += ["python:3.10-slim", "python", f"{container_wd}/{script_name}"]
+
+    # Try to run via Docker CLI
+    try:
+        proc = subprocess.run(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+        ok = proc.returncode == 0
+        out = proc.stdout
+        err = proc.stderr
+        return ok, out, err
+    except FileNotFoundError:
+        # docker CLI not found; fallback to local subprocess
+        pass
+    except subprocess.TimeoutExpired as e:
+        return False, e.stdout if hasattr(e, 'stdout') else '', str(e)
+    except Exception as e:
+        # If docker failed for any reason, try local subprocess fallback
+        pass
+
+    # Fallback: execute locally (less secure)
+    try:
+        proc = subprocess.Popen([os.sys.executable, path], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = proc.communicate(timeout=120)
+        ok = proc.returncode == 0
+        return ok, out, err
+    except Exception as e:
+        return False, "", str(e)
 
 
 def coder_visualizer_node(state: ReportState) -> dict:
@@ -148,7 +196,7 @@ def coder_visualizer_node(state: ReportState) -> dict:
         errs.append(f"security_reject: {reason}")
         return {"execution_errors": errs}
 
-    # Execute code in artifacts directory (isolation maintained by subprocess)
+    # Execute code in artifacts directory (isolation via Docker)
     ok, out, err = _exec_code_in_subprocess(code, cwd="artifacts")
     if not ok:
         errs = list(state.get("execution_errors", []))

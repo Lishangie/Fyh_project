@@ -16,3 +16,7 @@ sentence-transformers
 tiktoken
 llama-parse
 langchain-community
+fastapi
+uvicorn[standard]
+python-multipart
+docker
