@@ -75,17 +75,37 @@ def coder_visualizer_node(state: ReportState) -> dict:
     title = state.get("task_description", "Experiment")
     context = state.get("context_data", "")
     draft = state.get("draft_text", "")
+    # Heuristics: detect UML/architecture, code snippet, or plotting request
+    low_draft = draft.lower() if isinstance(draft, str) else ""
+    lowt = title.lower() if isinstance(title, str) else ""
+
+    wants_uml = any(k in low_draft for k in ("uml", "plantuml", "архитектура", "architecture", "архитектур")) or any(k in lowt for k in ("uml", "plantuml", "архитектура", "architecture", "архитектур"))
 
     # Heuristic: if the draft contains a fenced code block or the title mentions code,
     # produce a highlighted code image. Otherwise, produce a matplotlib plot.
     wants_code_image = False
     if "```" in draft:
         wants_code_image = True
-    lowt = title.lower() if isinstance(title, str) else ""
     if any(k in lowt for k in ("код", "code", "snippet", "пример кода")):
         wants_code_image = True
 
-    if wants_code_image:
+    if wants_uml:
+        # prepare a script that will render PlantUML via the public PlantUML server
+        import re
+        m = re.search(r"```plantuml\n([\s\S]*?)```", draft, re.I)
+        plantuml_text = m.group(1) if m else None
+        if not plantuml_text:
+            # fallback: ask LLM to generate PlantUML based on the draft description
+            plantuml_text = "'@startuml\nactor User\n@enduml'"
+
+        prompt = (
+            "Write a standalone Python script that contains a variable `PLANTUML_TEXT` with PlantUML source as a triple-quoted string,\n"
+            "encodes it appropriately for the PlantUML server, downloads the rendered PNG from http://www.plantuml.com/plantuml/png/<encoded>,\n"
+            "saves it under the `artifacts/` folder (e.g. artifacts/diagram_plantuml.png) and prints the path to the saved PNG.\n"
+            "The script may use the `requests` library but must not perform any other network actions.\n"
+            f"PLANTUML_SOURCE:\n{plantuml_text}\n\nTaskTitle: {title}\nContext: {context}\n"
+        )
+    elif wants_code_image:
         # try to extract a fenced code block from the draft
         import re
         m = re.search(r"```(?:python)?\n([\s\S]*?)```", draft)
