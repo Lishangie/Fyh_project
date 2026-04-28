@@ -62,11 +62,40 @@ def coder_visualizer_node(state: ReportState) -> dict:
     os.makedirs("artifacts", exist_ok=True)
     title = state.get("task_description", "Experiment")
     context = state.get("context_data", "")
-    prompt = (
-        f"Write a Python script that loads sample data (or uses provided data) and saves a publication-quality PNG plot to artifacts/."
-        f" The output file should be named plot_auto.png and use matplotlib. Only provide runnable Python code, no explanation.\n"
-        f"TaskTitle: {title}\nContext: {context}\n"
-    )
+    draft = state.get("draft_text", "")
+
+    # Heuristic: if the draft contains a fenced code block or the title mentions code,
+    # produce a highlighted code image. Otherwise, produce a matplotlib plot.
+    wants_code_image = False
+    if "```" in draft:
+        wants_code_image = True
+    lowt = title.lower() if isinstance(title, str) else ""
+    if any(k in lowt for k in ("код", "code", "snippet", "пример кода")):
+        wants_code_image = True
+
+    if wants_code_image:
+        # try to extract a fenced code block from the draft
+        import re
+        m = re.search(r"```(?:python)?\n([\s\S]*?)```", draft)
+        snippet = m.group(1) if m else None
+        if not snippet:
+            # include a small default snippet if none found
+            snippet = "print('Hello, world')\n"
+
+        prompt = (
+            "Write a standalone Python script that imports `generate_code_image` from `tools.pygments_renderer`\n"
+            "and renders the provided code snippet into a PNG saved under the `artifacts/` folder.\n"
+            "The script must NOT perform any network operations and must only write files under the `artifacts/` directory.\n"
+            "On success, the script should print the path to the generated image.\n\n"
+            f"CODE_SNIPPET:\n{snippet}\n\n"
+            f"TaskTitle: {title}\nContext: {context}\n"
+        )
+    else:
+        prompt = (
+            f"Write a Python script that loads sample data (or uses provided data) and saves a publication-quality PNG plot to artifacts/."
+            f" The output file should be named plot_auto.png and use matplotlib. Only provide runnable Python code, no explanation.\n"
+            f"TaskTitle: {title}\nContext: {context}\n"
+        )
 
     try:
         code = hybrid_llm_call(prompt, "code_gen")
@@ -77,9 +106,7 @@ def coder_visualizer_node(state: ReportState) -> dict:
 
     # Simple heuristic: if code block fences exist, strip them
     if code.strip().startswith("```"):
-        # remove first and last fence
         parts = code.split("```")
-        # take the middle part
         if len(parts) >= 3:
             code = parts[1]
 
@@ -89,7 +116,7 @@ def coder_visualizer_node(state: ReportState) -> dict:
         errs.append(f"security_reject: {reason}")
         return {"execution_errors": errs}
 
-    # Execute code in artifacts directory
+    # Execute code in artifacts directory (isolation maintained by subprocess)
     ok, out, err = _exec_code_in_subprocess(code, cwd="artifacts")
     if not ok:
         errs = list(state.get("execution_errors", []))

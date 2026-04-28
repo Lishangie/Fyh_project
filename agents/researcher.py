@@ -7,6 +7,21 @@ try:
 except Exception:
     pdfplumber = None
 
+from pydantic import BaseModel
+from core.llm_router import hybrid_llm_call_structured
+
+
+class GostRequirement(BaseModel):
+    parameter: str
+    value: str
+    context: str
+    page: int | None = None
+    source: str | None = None
+
+
+class GostRequirements(BaseModel):
+    requirements: List[GostRequirement]
+
 
 def _extract_pdf_pages(path: str) -> List[Dict]:
     """Extract text by page and return list of chunks with metadata."""
@@ -71,8 +86,32 @@ def research_node(state: ReportState) -> dict:
         idx_lines = [f"[EXTRACTED] {os.path.basename(c['source'])}#p{c['page']}: {c['text'][:200]}" for c in new_chunks]
         ctx = ctx + "\n" + "\n".join(idx_lines)
 
+    # Try to extract formal ГОСТ-style requirements from the newly extracted pages
+    parsed_requirements: List[Dict] = []
+    try:
+        # Build a compact prompt that includes page indices and short excerpts
+        examples = []
+        for c in new_chunks:
+            examples.append(f"PAGE={c['page']} SOURCE={os.path.basename(c['source'])}\n{c['text'][:800]}")
+
+        prompt = (
+            "Extract layout, table and formatting requirements following ГОСТ rules from the following page excerpts.\n"
+            "Return a JSON object with a single key `requirements` which is an array of objects:\n"
+            "{parameter: str, value: str, context: str, page: int, source: str}.\n"
+            "Only return valid JSON that matches this schema.\n\n"
+            "Page excerpts:\n" + "\n---\n".join(examples)
+        )
+
+        schema = GostRequirements
+        parsed = hybrid_llm_call_structured(prompt, schema, task_type="gost_extraction")
+        parsed_requirements = [r.dict() for r in parsed.requirements]
+    except Exception:
+        # If structured extraction fails, leave parsed_requirements empty but continue
+        parsed_requirements = list(state.get("parsed_requirements", []))
+
     return {
         "context_data": ctx,
         "knowledge_chunks": new_chunks,
+        "parsed_requirements": parsed_requirements,
         "execution_errors": list(state.get("execution_errors", [])),
     }

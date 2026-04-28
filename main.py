@@ -44,8 +44,17 @@ def document_assembler_node(state: ReportState) -> dict:
     except Exception as e:
         return {"execution_errors": [f"Ошибка загрузки шаблона docx: {e}"]}
 
+    # Validate artifact paths exist before assembly
+    artifact_paths = list(state.get("artifact_paths", []))
+    missing = [p for p in artifact_paths if not os.path.exists(p)]
+    if missing:
+        errs = list(state.get("execution_errors", []))
+        for m in missing:
+            errs.append(f"assembler: missing artifact {m}")
+        return {"execution_errors": errs}
+
     images_context = {}
-    for idx, path in enumerate(state.get("artifact_paths", [])):
+    for idx, path in enumerate(artifact_paths):
         if os.path.exists(path):
             images_context[f"dynamic_img_{idx}"] = InlineImage(doc, path, width=Mm(160))
         else:
@@ -132,7 +141,19 @@ def build_autonomous_graph():
         },
     )
 
-    workflow.add_edge("assembler_node", END)
+    # Assembly may fail if artifacts are missing; route accordingly
+    def assembler_router(state: ReportState):
+        errors = state.get("execution_errors", [])
+        return "assembler_error" if errors else "assembler_ok"
+
+    workflow.add_conditional_edges(
+        "assembler_node",
+        assembler_router,
+        {
+            "assembler_ok": END,
+            "assembler_error": "error_resolver_node",
+        },
+    )
 
     memory = SqliteSaver.from_conn_string("sqlite_checkpoints.db")
     graph = workflow.compile(checkpointer=memory, interrupt_before=["assembler_node"])

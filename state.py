@@ -11,6 +11,8 @@ class ReportState(TypedDict, total=False):
     human_feedback: str
     # Extracted knowledge chunks from PDFs: list of dicts {source, page, text, metadata}
     knowledge_chunks: Annotated[List[dict], operator.add]
+    # Parsed, structured ГОСТ requirements extracted from documents
+    parsed_requirements: Annotated[List[dict], operator.add]
     # Retry counters per node name
     retry_counts: dict
     # Temporary field used by error resolver to indicate routing after repair
