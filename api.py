@@ -6,8 +6,6 @@ import uuid
 import os
 from typing import Optional, List
 import shutil
-from main import build_autonomous_graph
-
 app = FastAPI(title="Fyh_project Report API")
 
 # simple in-memory registry of running threads
@@ -22,6 +20,10 @@ class StartRequest(BaseModel):
 @app.post("/report/start")
 def start_report(req: StartRequest):
     thread_id = str(uuid.uuid4())
+    try:
+        from main import build_autonomous_graph
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cannot import graph builder: {e}")
     graph = build_autonomous_graph()
     thread_config = {"configurable": {"thread_id": thread_id}}
     initial_state = {
@@ -81,6 +83,10 @@ def knowledge_list():
 
 @app.get("/report/status/{thread_id}")
 def report_status(thread_id: str):
+    try:
+        from main import build_autonomous_graph
+    except Exception as e:
+        return {"status": "unavailable", "error": str(e), "state": None}
     graph = build_autonomous_graph()
     thread_config = {"configurable": {"thread_id": thread_id}}
     state_snapshot = graph.get_state(thread_config)
@@ -102,6 +108,10 @@ class FeedbackRequest(BaseModel):
 
 @app.post("/report/feedback/{thread_id}")
 def report_feedback(thread_id: str, req: FeedbackRequest):
+    try:
+        from main import build_autonomous_graph
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cannot import graph builder: {e}")
     graph = build_autonomous_graph()
     thread_config = {"configurable": {"thread_id": thread_id}}
     state, current_node = graph._load_checkpoint(thread_id)

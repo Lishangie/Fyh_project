@@ -2,6 +2,7 @@ version: '3.8'
 services:
   backend:
     build: .
+    container_name: fyh_project_backend_local
     ports:
       - "8000:8000"
     volumes:
@@ -12,6 +13,7 @@ services:
       - ALLOW_PLANTUML=1
   frontend:
     build: .
+    container_name: fyh_project_frontend_local
     command: streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0
     ports:
       - "8501:8501"

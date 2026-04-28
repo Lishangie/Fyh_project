@@ -6,6 +6,12 @@ from typing import Tuple
 from state import ReportState
 from core.llm_router import hybrid_llm_call, hybrid_vlm_call
 
+# Optional import of docker SDK; used when backend runs inside a container
+try:
+    import docker as _docker_sdk
+except Exception:
+    _docker_sdk = None
+
 
 def _security_review(code: str) -> Tuple[bool, str]:
     """Static analysis of generated code to block dangerous constructs.
@@ -86,6 +92,33 @@ def _exec_code_in_subprocess(code: str, cwd: str) -> Tuple[bool, str, str]:
     docker_cmd += ["-v", f"{host_cwd}:{container_wd}", "-w", container_wd]
     # use a minimal Python image
     docker_cmd += ["python:3.10-slim", "python", f"{container_wd}/{script_name}"]
+
+    # If the Docker socket is available and the docker SDK is installed, prefer the SDK
+    docker_socket = "/var/run/docker.sock"
+    if os.path.exists(docker_socket) and _docker_sdk is not None:
+        try:
+            client = _docker_sdk.from_env()
+            volumes = {host_cwd: {"bind": container_wd, "mode": "rw"}}
+            # network_mode='none' to disable networking when not allowed
+            run_kwargs = {
+                "remove": True,
+                "volumes": volumes,
+                "mem_limit": "256m",
+            }
+            if not allow_network:
+                run_kwargs["network_mode"] = "none"
+
+            try:
+                logs = client.containers.run("python:3.10-slim", ["python", f"{container_wd}/{script_name}"], **run_kwargs)
+                out = logs.decode() if isinstance(logs, (bytes, bytearray)) else str(logs)
+                return True, out, ""
+            except _docker_sdk.errors.ContainerError as e:
+                out = e.stdout.decode() if isinstance(e.stdout, (bytes, bytearray)) else (e.stdout or "")
+                err = e.stderr.decode() if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or str(e))
+                return False, out, err
+        except Exception:
+            # If docker SDK usage fails, fall back to CLI approach below
+            pass
 
     # Try to run via Docker CLI
     try:
