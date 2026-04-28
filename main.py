@@ -17,6 +17,7 @@ from agents.researcher import research_node
 from agents.writer import writer_node
 from agents.coder import coder_visualizer_node
 from agents.error_resolver import error_resolver_node
+from agents.memory import feedback_processor_node
 
 def document_assembler_node(state: ReportState) -> dict:
     print("--- Запуск генерации эталонного DOCX файла ---")
@@ -105,6 +106,7 @@ def build_autonomous_graph():
     workflow.add_node("writer_node", writer_node)
     workflow.add_node("coder_node", coder_visualizer_node)
     workflow.add_node("error_resolver_node", error_resolver_node)
+    workflow.add_node("feedback_processor_node", feedback_processor_node)
     workflow.add_node("assembler_node", document_assembler_node)
 
     workflow.set_entry_point("researcher_node")
@@ -141,10 +143,26 @@ def build_autonomous_graph():
         },
     )
 
+    # Feedback processor should reuse the same resolution router to decide where to retry
+    workflow.add_conditional_edges(
+        "feedback_processor_node",
+        error_resolution_router,
+        {
+            "writer_node": "writer_node",
+            "coder_node": "coder_node",
+            "assembler_node": "assembler_node",
+        },
+    )
+
     # Assembly may fail if artifacts are missing; route accordingly
     def assembler_router(state: ReportState):
         errors = state.get("execution_errors", [])
-        return "assembler_error" if errors else "assembler_ok"
+        human_fb = (state.get("human_feedback") or "").strip()
+        if errors:
+            return "assembler_error"
+        if human_fb:
+            return "assembler_feedback"
+        return "assembler_ok"
 
     workflow.add_conditional_edges(
         "assembler_node",
@@ -152,6 +170,7 @@ def build_autonomous_graph():
         {
             "assembler_ok": END,
             "assembler_error": "error_resolver_node",
+            "assembler_feedback": "feedback_processor_node",
         },
     )
 
@@ -195,12 +214,37 @@ if __name__ == "__main__":
         auto = args.yes or os.environ.get("AUTO_APPROVE", "0") in ("1", "true", "True")
         if auto:
             approve = True
-            print("Авто-одобрение включено — продолжаем сборку.")
+            feedback_input = None
+            print("Авто-одобрение включено — продолжаем сборка.")
         else:
-            user_approval = input("\nОдобрить промежуточные результаты и запустить компиляцию DOCX? (y/n): ")
-            approve = user_approval.lower() == 'y'
+            user_input = input(
+                "\nОдобрить промежуточные результаты и запустить компиляцию DOCX?\n"
+                "Введите 'y' для подтверждения, 'n' для отмены, или введите текстовый отзыв для обучения: "
+            )
+            ui = (user_input or "").strip()
+            if ui.lower() == 'y':
+                approve = True
+                feedback_input = None
+            elif ui.lower() == 'n' or ui == '':
+                approve = False
+                feedback_input = None
+            else:
+                # treat any other non-empty input as feedback to process
+                approve = True
+                feedback_input = ui
 
         if approve:
+            # If user provided freeform feedback, save it into the checkpoint so
+            # the graph can route to the feedback processor when resumed.
+            if feedback_input:
+                thread_id = thread_config.get("configurable", {}).get("thread_id", "default_thread")
+                current_state["human_feedback"] = feedback_input
+                # save updated checkpoint at the same paused node
+                try:
+                    app_graph.checkpointer.save(thread_id, current_state, current_node)
+                except Exception as e:
+                    print(f"Не удалось сохранить отзыв в чекпоинт: {e}")
+
             print(">>> Возобновление выполнения графа...")
             for event in app_graph.stream(None, config=thread_config):
                 for node_name, node_state in event.items():

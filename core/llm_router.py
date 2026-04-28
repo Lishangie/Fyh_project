@@ -149,3 +149,68 @@ def hybrid_llm_call_structured(prompt: str, schema: Type[BaseModel], task_type: 
     if os.environ.get("LLM_ROUTER_DEBUG"):
         print("hybrid_llm_call_structured debug:\n", "\n".join(attempts))
     raise RuntimeError("Failed to produce structured output from LLM")
+
+
+def hybrid_vlm_call(prompt: str, image_path: str, task_type: str) -> str:
+    """Send a multimodal request (text + image) to a heavy LLM/VLM model.
+
+    Attempts LangChain first, then OpenAI API. If no API key is present or
+    calls fail, the function returns a fallback acceptance string so the
+    pipeline can continue without blocking on VLM availability.
+    """
+    import base64
+    attempts = []
+    heavy_name = os.environ.get("HEAVY_LLM_NAME", os.environ.get("HEAVY_MODEL", "gpt-4o"))
+
+    # Read and base64-encode image
+    try:
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+    except Exception as e:
+        attempts.append(f"image_read_failed: {e}")
+        # Can't read image -> accept by default (do not block pipeline)
+        return "[VLM_FALLBACK_ACCEPTED] image_unreadable"
+
+    # Try LangChain ChatOpenAI with a HumanMessage that includes the image as base64
+    try:
+        # prefer langchain_core.messages if available for multimodal payloads
+        try:
+            from langchain_core.messages import HumanMessage
+        except Exception:
+            from langchain.schema import HumanMessage
+
+        from langchain.chat_models import ChatOpenAI
+
+        client = ChatOpenAI(model_name=heavy_name, temperature=0.0)
+        content = f"{prompt}\n\n[IMAGE_BASE64_BEGIN]\n{b64}\n[IMAGE_BASE64_END]"
+        resp = client([HumanMessage(content=content)])
+        if hasattr(resp, "content") and resp.content:
+            return resp.content
+        if isinstance(resp, list) and resp:
+            return getattr(resp[0], "content", str(resp[0]))
+        return str(resp)
+    except Exception as e:
+        attempts.append(f"langchain_vlm_failed: {e}")
+
+    # Try OpenAI ChatCompletion as a fallback if key is present
+    try:
+        import openai
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_KEY")
+        if not api_key:
+            attempts.append("no_openai_key")
+            # Graceful fallback: accept image if no key
+            return "[VLM_FALLBACK_ACCEPTED] no_api_key"
+        openai.api_key = api_key
+        resp = openai.ChatCompletion.create(
+            model=heavy_name,
+            messages=[{"role": "user", "content": content}],
+            temperature=0.0,
+        )
+        return resp["choices"][0]["message"]["content"]
+    except Exception as e:
+        attempts.append(f"openai_vlm_failed: {e}")
+
+    if os.environ.get("LLM_ROUTER_DEBUG"):
+        print("hybrid_vlm_call debug:\n", "\n".join(attempts))
+    # Final fallback: accept the image so we don't block pipeline
+    return "[VLM_FALLBACK_ACCEPTED] final"

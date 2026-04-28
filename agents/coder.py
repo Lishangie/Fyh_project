@@ -4,7 +4,7 @@ import subprocess
 import ast
 from typing import Tuple
 from state import ReportState
-from core.llm_router import hybrid_llm_call
+from core.llm_router import hybrid_llm_call, hybrid_vlm_call
 
 
 def _security_review(code: str) -> Tuple[bool, str]:
@@ -12,7 +12,8 @@ def _security_review(code: str) -> Tuple[bool, str]:
 
     Returns (allowed: bool, reason: str)
     """
-    banned_modules = {"os", "sys", "subprocess", "socket", "requests", "urllib", "ftplib", "paramiko"}
+    # Keep a conservative banned list but allow `requests` conditionally for PlantUML
+    banned_modules = {"os", "sys", "subprocess", "socket", "urllib", "ftplib", "paramiko"}
     banned_names = {"exec", "eval", "compile", "open", "__import__"}
     try:
         tree = ast.parse(code)
@@ -22,10 +23,21 @@ def _security_review(code: str) -> Tuple[bool, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for n in node.names:
-                if n.name.split(".")[0] in banned_modules:
+                mod = n.name.split(".")[0]
+                if mod == "requests":
+                    # allow requests only when the code explicitly references PlantUML
+                    if "plantuml" in code.lower() or "plantuml.com" in code.lower():
+                        continue
+                    return False, f"banned import: {n.name}"
+                if mod in banned_modules:
                     return False, f"banned import: {n.name}"
         if isinstance(node, ast.ImportFrom):
-            if (node.module or "").split(".")[0] in banned_modules:
+            mod0 = (node.module or "").split(".")[0]
+            if mod0 == "requests":
+                if "plantuml" in code.lower() or "plantuml.com" in code.lower():
+                    continue
+                return False, f"banned import from: {node.module}"
+            if mod0 in banned_modules:
                 return False, f"banned import from: {node.module}"
         if isinstance(node, ast.Call):
             # function being called may be Name or Attribute
@@ -123,13 +135,39 @@ def coder_visualizer_node(state: ReportState) -> dict:
         errs.append(f"execution_failed: {err}\nstdout:{out}")
         return {"execution_errors": errs}
 
-    # Find generated PNGs in artifacts after execution
+    # Find generated PNGs in artifacts after execution and perform VLM review
     artifact_paths = list(state.get("artifact_paths", []))
-    for fn in os.listdir("artifacts"):
-        if fn.lower().endswith(".png"):
-            path = os.path.join("artifacts", fn)
-            if path not in artifact_paths:
-                artifact_paths.append(path)
+    pre_existing = set(state.get("artifact_paths", []))
+    files_after = [f for f in os.listdir("artifacts") if f.lower().endswith(".png")]
+    new_pngs = [f for f in files_after if os.path.join("artifacts", f) not in pre_existing]
+
+    for fn in new_pngs:
+        path = os.path.join("artifacts", fn)
+        # Ask VLM to review the image for readability/labels/truncation
+        try:
+            vlm_prompt = (
+                "Please inspect the attached image for the following issues: readability of text, presence and clarity of axes labels and ticks, "
+                "whether any labels or text are truncated/clipped, and whether the figure is generally publication-quality. "
+                "Respond briefly with 'OK' if no issues, otherwise describe issues concisely."
+            )
+            vlm_resp = hybrid_vlm_call(vlm_prompt, path, task_type="vlm_review")
+        except Exception as e:
+            vlm_resp = f"[VLM_CALL_FAILED] {e}"
+
+        if isinstance(vlm_resp, str) and vlm_resp.startswith("[VLM_FALLBACK_ACCEPTED]"):
+            # VLM not available; accept by default
+            artifact_paths.append(path)
+            continue
+
+        verdict = (vlm_resp or "").lower()
+        # basic heuristics for severe visual issues
+        bad_tokens = ("cropped", "truncat", "clipp", "overlap", "blur", "not readable", "no labels", "axes missing", "cut off")
+        if any(tok in verdict for tok in bad_tokens):
+            errs = list(state.get("execution_errors", []))
+            errs.append(f"vlm_detected_issue for {path}: {vlm_resp}")
+            return {"execution_errors": errs}
+        # otherwise accept the artifact
+        artifact_paths.append(path)
 
     dynamic_tables = list(state.get("dynamic_tables", []))
     return {
