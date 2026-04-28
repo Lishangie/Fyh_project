@@ -11,3 +11,8 @@ langchain-openai
 langgraph
 pydantic
 pdfplumber
+chromadb
+sentence-transformers
+tiktoken
+llama-parse
+langchain-community

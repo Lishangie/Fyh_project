@@ -30,12 +30,31 @@ def hybrid_llm_call(prompt: str, task_type: str, fallback_limit: int = 3) -> str
 
     # Try LangChain chat models if available
     try:
-        from langchain.chat_models import ChatOpenAI
         from langchain.schema import HumanMessage
 
         for label, model_name in candidates:
             try:
+                # Special-case: local Ollama models when FAST_LLM_NAME starts with 'ollama/'
+                if model_name and isinstance(model_name, str) and model_name.startswith("ollama/"):
+                    try:
+                        # model_name format: 'ollama/<model-id>'
+                        ollama_model = model_name.split("/", 1)[1]
+                        from langchain_community.chat_models import ChatOllama
+
+                        base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+                        client = ChatOllama(model=ollama_model, base_url=base, temperature=0.0)
+                        resp = client([HumanMessage(content=prompt)])
+                        if hasattr(resp, "content"):
+                            return resp.content
+                        if isinstance(resp, list) and resp:
+                            return getattr(resp[0], "content", str(resp[0]))
+                        return str(resp)
+                    except Exception as e:
+                        attempts.append(f"ollama({model_name})->{e}")
+                        # fall through to try other candidates
+
                 # low temperature for deterministic behavior in most tasks
+                from langchain.chat_models import ChatOpenAI
                 client = ChatOpenAI(model_name=model_name, temperature=0.0)
                 resp = client([HumanMessage(content=prompt)])
                 # LangChain chat models often return AIMessage or list-like
