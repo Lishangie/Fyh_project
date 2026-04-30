@@ -3,7 +3,7 @@ import requests
 import os
 import time
 
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
+API_URL = os.environ.get("API_URL", "http://backend:8000")
 
 st.set_page_config(page_title="Fyh Report Generator", layout="wide")
 

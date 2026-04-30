@@ -21,3 +21,4 @@ uvicorn[standard]
 python-multipart
 docker
 streamlit
+python-dotenv

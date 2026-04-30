@@ -1,5 +1,6 @@
 import os
 import argparse
+from typing import Optional
 try:
     # prefer the installed langgraph package if available
     from langgraph import StateGraph, END
@@ -20,6 +21,10 @@ from agents.error_resolver import error_resolver_node
 from agents.memory import feedback_processor_node
 
 def document_assembler_node(state: ReportState) -> dict:
+    # Avoid re-running assembly if already completed in this session
+    if state.get("assembled_done"):
+        return {"execution_errors": []}
+
     print("--- Запуск генерации эталонного DOCX файла ---")
     template_path = os.path.join("assets", "template_gost.docx")
     os.makedirs("assets", exist_ok=True)
@@ -73,7 +78,7 @@ def document_assembler_node(state: ReportState) -> dict:
         output_file = os.path.join("artifacts", "Final_Academic_Report.docx")
         doc.save(output_file)
         print(f"--- Документ успешно скомпилирован: {output_file} ---")
-        return {"execution_errors": []}
+        return {"execution_errors": [], "assembled_done": True}
     except Exception as e:
         return {"execution_errors": [str(e)]}
 
@@ -175,7 +180,10 @@ def build_autonomous_graph():
     )
 
     memory = SqliteSaver.from_conn_string("sqlite_checkpoints.db")
-    graph = workflow.compile(checkpointer=memory, interrupt_before=["assembler_node"])
+    # Allow tests to auto-approve HITL assembly by disabling the interrupt
+    auto = os.environ.get("AUTO_APPROVE", "0") in ("1", "true", "True")
+    interrupts = [] if auto else ["assembler_node"]
+    graph = workflow.compile(checkpointer=memory, interrupt_before=interrupts)
     return graph
 
 

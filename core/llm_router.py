@@ -8,6 +8,13 @@ from typing import Optional, Type
 from pydantic import BaseModel
 import os
 import traceback
+try:
+    from dotenv import load_dotenv
+    # Load environment variables from a .env file if present
+    load_dotenv()
+except Exception:
+    # python-dotenv not installed; rely on existing environment
+    pass
 
 def hybrid_llm_call(prompt: str, task_type: str, fallback_limit: int = 3) -> str:
     """Attempt fast model, then heavy model. Returns text response.
@@ -18,7 +25,8 @@ def hybrid_llm_call(prompt: str, task_type: str, fallback_limit: int = 3) -> str
     - In absence of any real model, returns a deterministic mock response.
     """
     attempts = []
-    fast_name = os.environ.get("FAST_LLM_NAME")
+    # Default to a local Ollama model accessible from Docker via host.docker.internal
+    fast_name = os.environ.get("FAST_LLM_NAME", "ollama/huihui4-8b")
     heavy_name = os.environ.get("HEAVY_LLM_NAME", os.environ.get("HEAVY_MODEL", "gpt-4"))
 
     # Preferred order: FAST -> HEAVY
@@ -41,7 +49,8 @@ def hybrid_llm_call(prompt: str, task_type: str, fallback_limit: int = 3) -> str
                         ollama_model = model_name.split("/", 1)[1]
                         from langchain_community.chat_models import ChatOllama
 
-                        base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+                        # When running inside Docker on Linux, use host.docker.internal to reach host services
+                        base = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
                         client = ChatOllama(model=ollama_model, base_url=base, temperature=0.0)
                         resp = client([HumanMessage(content=prompt)])
                         if hasattr(resp, "content"):

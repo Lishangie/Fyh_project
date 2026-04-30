@@ -1,0 +1,5 @@
+FROM QuantFactory/Meta-Llama-3-8B-Instruct-GGUF
+# Optimizations for ~6GB VRAM (Q4_K_M style quantized 8B)
+PARAMETER num_ctx 4096
+PARAMETER num_thread 8
+PARAMETER num_gpu 99

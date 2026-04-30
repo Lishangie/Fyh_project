@@ -1,4 +1,5 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import threading
@@ -7,6 +8,15 @@ import os
 from typing import Optional, List
 import shutil
 app = FastAPI(title="Fyh_project Report API")
+
+# Allow cross-origin requests from anywhere (frontend may be hosted remotely)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # simple in-memory registry of running threads
 _threads = {}

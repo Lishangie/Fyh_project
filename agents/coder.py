@@ -61,89 +61,93 @@ def _security_review(code: str) -> Tuple[bool, str]:
 def _exec_code_in_subprocess(code: str, cwd: str) -> Tuple[bool, str, str]:
     """Execute generated code inside an ephemeral Docker container for isolation.
 
-    Falls back to local subprocess execution if Docker is unavailable or fails.
+    This function requires the `docker` Python SDK and a reachable Docker daemon
+    via the host socket `/var/run/docker.sock`. It will NOT fall back to local
+    execution to avoid executing untrusted code on the host.
+
     Returns (ok, stdout, stderr).
     """
-    # write code to a temp file inside cwd so it can be mounted
-    fd, path = tempfile.mkstemp(suffix=".py", dir=cwd)
+    # Ensure target directory exists and write the script there so it can be mounted
+    os.makedirs(cwd, exist_ok=True)
+    fd, host_path = tempfile.mkstemp(suffix=".py", dir=cwd)
     os.close(fd)
-    with open(path, "w", encoding="utf8") as f:
+    with open(host_path, "w", encoding="utf8") as f:
         f.write(code)
 
     host_cwd = os.path.abspath(cwd)
     container_wd = "/workspace"
-    script_name = os.path.basename(path)
+    script_name = os.path.basename(host_path)
 
     # Decide whether to allow network (only for PlantUML rendering)
     allow_network = False
     if "plantuml" in code.lower() or "plantuml.com" in code.lower():
         allow_network = True
 
-    # Build docker command
-    docker_cmd = [
-        "docker", "run", "--rm",
-        # network disabled by default
-    ]
-    if not allow_network:
-        docker_cmd += ["--network", "none"]
-    # resource limits
-    docker_cmd += ["-m", "256m", "--cpus", "0.5"]
-    # mount the working directory so artifacts are persisted
-    docker_cmd += ["-v", f"{host_cwd}:{container_wd}", "-w", container_wd]
-    # use a minimal Python image
-    docker_cmd += ["python:3.10-slim", "python", f"{container_wd}/{script_name}"]
-
-    # If the Docker socket is available and the docker SDK is installed, prefer the SDK
+    # Strict requirement: docker SDK and docker socket must be available
     docker_socket = "/var/run/docker.sock"
-    if os.path.exists(docker_socket) and _docker_sdk is not None:
+    if _docker_sdk is None:
         try:
-            client = _docker_sdk.from_env()
-            volumes = {host_cwd: {"bind": container_wd, "mode": "rw"}}
-            # network_mode='none' to disable networking when not allowed
-            run_kwargs = {
-                "remove": True,
-                "volumes": volumes,
-                "mem_limit": "256m",
-            }
-            if not allow_network:
-                run_kwargs["network_mode"] = "none"
-
-            try:
-                logs = client.containers.run("python:3.10-slim", ["python", f"{container_wd}/{script_name}"], **run_kwargs)
-                out = logs.decode() if isinstance(logs, (bytes, bytearray)) else str(logs)
-                return True, out, ""
-            except _docker_sdk.errors.ContainerError as e:
-                out = e.stdout.decode() if isinstance(e.stdout, (bytes, bytearray)) else (e.stdout or "")
-                err = e.stderr.decode() if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or str(e))
-                return False, out, err
+            os.remove(host_path)
         except Exception:
-            # If docker SDK usage fails, fall back to CLI approach below
             pass
+        return False, "", "docker SDK (python package 'docker') is not installed"
 
-    # Try to run via Docker CLI
-    try:
-        proc = subprocess.run(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
-        ok = proc.returncode == 0
-        out = proc.stdout
-        err = proc.stderr
-        return ok, out, err
-    except FileNotFoundError:
-        # docker CLI not found; fallback to local subprocess
-        pass
-    except subprocess.TimeoutExpired as e:
-        return False, e.stdout if hasattr(e, 'stdout') else '', str(e)
-    except Exception as e:
-        # If docker failed for any reason, try local subprocess fallback
-        pass
+    if not os.path.exists(docker_socket):
+        try:
+            os.remove(host_path)
+        except Exception:
+            pass
+        return False, "", "/var/run/docker.sock not found; docker daemon not reachable"
 
-    # Fallback: execute locally (less secure)
     try:
-        proc = subprocess.Popen([os.sys.executable, path], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        out, err = proc.communicate(timeout=120)
-        ok = proc.returncode == 0
-        return ok, out, err
+        client = _docker_sdk.from_env()
+        # quick connectivity check
+        client.ping()
     except Exception as e:
-        return False, "", str(e)
+        try:
+            os.remove(host_path)
+        except Exception:
+            pass
+        return False, "", f"Cannot connect to Docker daemon: {e}"
+
+    image = "python:3.10-slim"
+    try:
+        # ensure image is present (pull if missing)
+        try:
+            client.images.get(image)
+        except _docker_sdk.errors.ImageNotFound:
+            client.images.pull(image)
+
+        volumes = {host_cwd: {"bind": container_wd, "mode": "rw"}}
+        run_kwargs = {
+            "volumes": volumes,
+            "remove": True,
+            "mem_limit": "256m",
+        }
+        if not allow_network:
+            run_kwargs["network_mode"] = "none"
+
+        logs = client.containers.run(image, ["python", f"{container_wd}/{script_name}"], **run_kwargs)
+        out = logs.decode() if isinstance(logs, (bytes, bytearray)) else str(logs)
+        try:
+            os.remove(host_path)
+        except Exception:
+            pass
+        return True, out, ""
+    except _docker_sdk.errors.ContainerError as e:
+        out = e.stdout.decode() if isinstance(e.stdout, (bytes, bytearray)) else (e.stdout or "")
+        err = e.stderr.decode() if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or str(e))
+        try:
+            os.remove(host_path)
+        except Exception:
+            pass
+        return False, out, err
+    except Exception as e:
+        try:
+            os.remove(host_path)
+        except Exception:
+            pass
+        return False, "", f"Docker execution failed: {e}"
 
 
 def coder_visualizer_node(state: ReportState) -> dict:

@@ -6,7 +6,8 @@ from typing import Optional, Tuple
 class SqliteSaver:
     def __init__(self, db_path: str):
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # Allow longer wait for concurrent writers to avoid 'database is locked' errors
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._init_table()
 
     @classmethod

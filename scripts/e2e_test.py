@@ -34,7 +34,7 @@ def start_report():
 def poll_status(thread_id, timeout_seconds=600):
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        r = requests.get(f"{API_URL}/report/status/{thread_id}", timeout=10)
+        r = requests.get(f"{API_URL}/report/status/{thread_id}", timeout=30)
         if not r.ok:
             raise RuntimeError(f"Status request failed: {r.status_code} {r.text}")
         data = r.json()
