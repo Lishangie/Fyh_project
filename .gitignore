@@ -39,3 +39,8 @@ node_modules/
 # Test cache
 .pytest_cache/
 .coverage
+
+# Local env and large model files
+.env
+*.gguf
+sqlite_checkpoints.db-journal
